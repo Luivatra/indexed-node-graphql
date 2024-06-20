@@ -1,0 +1,1 @@
+set NODE_URL in top of script and run with python after installing requirements with pip
