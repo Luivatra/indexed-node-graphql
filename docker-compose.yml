@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  indexed-node-graphql:
+    image: indexed-node-graphql
+    build: .
+    ports:
+      - "9050:8000"
+    env_file:
+      - .env
+    restart: unless-stopped

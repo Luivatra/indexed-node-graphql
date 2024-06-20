@@ -1,11 +1,18 @@
+from functools import lru_cache
+import time
 import strawberry
 import requests
 import decimal
 import json
 from typing import Any, NewType, List, TypeAlias
+from strawberry.extensions import AddValidationRules
+from graphql.validation import NoSchemaIntrospectionCustomRule
+from fastapi import FastAPI
+from strawberry.fastapi import GraphQLRouter
+import os
 
 #remember to set url
-NODE_URL = ""
+NODE_URL = os.getenv("NODE_URL")
 
 JSON = strawberry.scalar(
     NewType("JSON", object),
@@ -21,6 +28,10 @@ SignedTransaction = strawberry.scalar(
     parse_value=lambda v: v,
 )
 
+def get_ttl_hash(seconds=2):
+    """Return the same value withing `seconds` time period"""
+    return round(time.time() / seconds)
+
 def get_node_info():
     res = requests.get(f"{NODE_URL}/info")
     if res.ok:
@@ -28,7 +39,19 @@ def get_node_info():
     else:
         return None
     
-def get_unspent_boxes_by_address(address: str):
+def get_transaction_count_by_address(address: str):
+    res = requests.post(f"{NODE_URL}/blockchain/transaction/byAddress?offset=0&limit=1",json=address)
+    if res.ok:
+        return res.json()
+    else:
+        return None
+    
+cached_confirmed_boxes = {}
+
+@lru_cache()
+def get_unspent_boxes_by_address(address: str, ttl_hash=None):
+    del ttl_hash
+
     box_map = {}
     more_boxes = True
     offset = 0
@@ -40,6 +63,7 @@ def get_unspent_boxes_by_address(address: str):
         if res.ok:
             boxes = res.json()
             more_boxes = len(boxes) == limit
+            offset += limit
             for box in boxes:
                 box_map[box["boxId"]] = box
                 ergo_tree = box["ergoTree"]
@@ -244,7 +268,7 @@ class Query:
         for address in addresses:
             balance = None
             if balance_needed:
-              boxes = get_unspent_boxes_by_address(address)
+              boxes = get_unspent_boxes_by_address(address,get_ttl_hash())
               balance = get_balance_from_boxes(boxes)
             used = is_address_used(address)
             res.append(Address(address=address, balance=balance, used=used))
@@ -278,7 +302,7 @@ class Query:
     def boxes(self, addresses: List[str] = [], skip: int = 0, take: int = 1, spent: bool = False) -> List[Box]:
         box_list = []
         for address in addresses:
-            box_map = get_unspent_boxes_by_address(address)
+            box_map = get_unspent_boxes_by_address(address,get_ttl_hash())
             for boxId in box_map:
               assets = []
               for asset in box_map[boxId]["assets"]:
@@ -336,4 +360,11 @@ class Mutation:
     def submitTransaction(signedTransaction: str = "") -> str:
         return submit_transaction(signedTransaction)
     
-schema = strawberry.Schema(query=Query,mutation=Mutation)
+schema = strawberry.Schema(query=Query,mutation=Mutation,extensions=[
+        AddValidationRules([NoSchemaIntrospectionCustomRule]),
+    ])
+
+graphql_app = GraphQLRouter(schema,graphql_ide=None)
+
+app = FastAPI()
+app.include_router(graphql_app, prefix="/graphql")
