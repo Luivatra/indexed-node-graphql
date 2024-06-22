@@ -82,6 +82,21 @@ def get_unspent_boxes_by_address(address: str, ttl_hash=None):
 
     return box_map
 
+
+def get_box(box_id: str):
+    res = requests.get(f"{NODE_URL}/blockchain/box/byId/{box_id}")
+    if res.ok:
+        return res.json()
+    else:
+        return None
+    
+def get_transaction(transaction_id: str):
+    res = requests.get(f"{NODE_URL}/blockchain/transaction/byId/{transaction_id}")
+    if res.ok:
+        return res.json()
+    else:
+        return None
+
 token_info_cache = {}
 
 def get_token_info(token_id: str):
@@ -90,13 +105,26 @@ def get_token_info(token_id: str):
     res_token = requests.get(f"{NODE_URL}/blockchain/token/byId/{token_id}")
     if res_token.ok:
         token_json = res_token.json()
-        res_box = requests.get(f"{NODE_URL}/blockchain/box/byId/{token_json['boxId']}")
-        if res_box.ok:
-          token_json["box"] = res_box.json()
-          token_info_cache[token_id] = token_json
-          return token_info_cache[token_id]
-        else:
-            return None
+        token_json["box"] = get_box(token_json['boxId'])
+        token_info_cache[token_id] = token_json
+        return token_info_cache[token_id]
+    elif res_token.status_code == 404:
+        issuer_box = get_box(token_id)
+        mint_transaction = get_transaction(issuer_box["spentTransactionId"])
+        for issuance_box in mint_transaction["outputs"]:
+            if len(issuance_box["assets"]) > 0:
+                if issuance_box["assets"][0]["tokenId"] == token_id:
+                    token_info_cache[token_id] = {
+                        "id": token_id,
+                        "boxId": issuance_box["boxId"],
+                        "emissionAmount": issuance_box["assets"][0]["amount"],
+                        "name": bytes.fromhex(issuance_box["additionalRegisters"]["R4"][4:]).decode("utf-8"),
+                        "description": bytes.fromhex(issuance_box["additionalRegisters"]["R5"][4:]).decode("utf-8"),
+                        "decimals": int(bytes.fromhex(issuance_box["additionalRegisters"]["R6"][4:]).decode("utf-8")),
+                        "box": issuance_box
+                    }
+                    return token_info_cache[token_id]
+        return None
     else:
         return None
     
@@ -364,7 +392,7 @@ schema = strawberry.Schema(query=Query,mutation=Mutation,extensions=[
         AddValidationRules([NoSchemaIntrospectionCustomRule]),
     ])
 
-graphql_app = GraphQLRouter(schema,graphql_ide=None)
+graphql_app = GraphQLRouter(schema)#,graphql_ide=None)
 
 app = FastAPI()
 app.include_router(graphql_app, prefix="/graphql")
